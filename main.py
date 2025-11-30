@@ -11,7 +11,6 @@ def main():
     parser.add_argument('--dry-run', action='store_true', help='Simulate without deleting')
     args = parser.parse_args()
 
-    # Create and run backup manager
     manager = BackupManager(backup_retention_policy, args.backup_dir)
     manager.run_cleanup(dry_run=args.dry_run)
 

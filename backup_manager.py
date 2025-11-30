@@ -1,11 +1,10 @@
-import logging
-import re
-from datetime import datetime
 from pathlib import Path
+from datetime import datetime
+import re
+import logging
 
 from data import BackupFile, RetentionPolicy
 from retention_policy_applier import RetentionPolicyApplier
-from config import backup_retention_policy
 
 
 class BackupManager:
@@ -13,12 +12,12 @@ class BackupManager:
     Manages backup files according to retention policies.
     """
 
-    def __init__(self, backup_dir: str, file_pattern: str = r".*\.(zip|tar|gz|sql)$"):
-        self.backup_dir = Path(backup_dir)
-        self.file_pattern = re.compile(file_pattern)
-        self.backup_files: list[BackupFile] = []
-
+    def __init__(self, retention_policy: list[RetentionPolicy], backup_dir: str) -> None:
+        self._backup_dir = Path(backup_dir)
+        self._file_pattern = re.compile(r'.*\.(zip)$')
+        self._backup_files: list[BackupFile] = []
         self._setup_logging()
+        self._policy_applier = RetentionPolicyApplier(self._logger, retention_policy)
 
     def _setup_logging(self):
         """Setup logging configuration."""
@@ -26,128 +25,107 @@ class BackupManager:
             level=logging.INFO,
             format='%(asctime)s - %(levelname)s - %(message)s',
             handlers=[
-                logging.FileHandler('/var/log/backup_cleaner.log'),
-                logging.StreamHandler()
-            ]
+                logging.FileHandler('logs.log'),
+                logging.StreamHandler(),
+            ],
         )
-        self.logger = logging.getLogger(__name__)
+        self._logger = logging.getLogger(__name__)
 
-    def scan_backups(self) -> None:
+    def run_cleanup(self, dry_run: bool = False) -> None:
+        """Execute the complete backup cleanup process."""
+        self._logger.info('Starting backup cleanup process')
+
+        self._scan_backups()
+        self._apply_retention_policies()
+
+        if dry_run:
+            self._dry_run()
+            return
+        deleted_count = self._cleanup_old_backups()
+        self._logger.info(f'Cleanup completed. Deleted {deleted_count} files')
+
+    def _scan_backups(self) -> None:
         """Scan backup directory and parse backup files."""
-        self.backup_files.clear()
+        self._backup_files.clear()
 
-        if not self.backup_dir.exists():
-            self.logger.error(f"Backup directory {self.backup_dir} does not exist")
+        if not self._backup_dir.exists():
+            self._logger.error(f'Backup directory {self._backup_dir} does not exist')
             return
 
-        for file_path in self.backup_dir.iterdir():
-            if file_path.is_file() and self.file_pattern.match(file_path.name):
-                timestamp = self._parse_timestamp_from_filename(file_path)
-                if timestamp:
-                    self.backup_files.append(BackupFile(file_path, timestamp))
+        for file_path in self._backup_dir.iterdir():
+            if not file_path.is_file() or not self._file_pattern.match(file_path.name):
+                continue
+            timestamp = self._parse_timestamp_from_filename(file_path)
+            if timestamp is None:
+                continue
+            self._backup_files.append(BackupFile(file_path, timestamp))
 
         # Sort by timestamp (newest first)
-        self.backup_files.sort(key=lambda x: x.timestamp, reverse=True)
-        self.logger.info(f"Found {len(self.backup_files)} backup files")
+        self._logger.info(f'Found {len(self._backup_files)} backup files')
 
-    def _parse_timestamp_from_filename(self, file_path: Path) -> datetime | None:
+    def _parse_timestamp_from_filename(self, file_path: Path) -> datetime:
         """
         Parse timestamp from filename.
         Supports common formats: backup_20231215_123045.zip, backup_2023-12-15_12-30-45.sql, etc.
         """
-        filename = file_path.stem  # Get filename without extension
-
-        # Try different timestamp patterns
-        patterns = [
-            r'(\d{4})(\d{2})(\d{2})_?(\d{2})(\d{2})(\d{2})',  # 20231215_123045
-            r'(\d{4})-?(\d{2})-?(\d{2})_?(\d{2})-?(\d{2})-?(\d{2})',  # 2023-12-15_12-30-45
-            r'(\d{4})\.?(\d{2})\.?(\d{2})_?(\d{2})\.?(\d{2})\.?(\d{2})',  # 2023.12.15_12.30.45
-        ]
-
-        for pattern in patterns:
-            match = re.search(pattern, filename)
-            if match:
-                try:
-                    year, month, day, hour, minute, second = map(int, match.groups())
-                    return datetime(year, month, day, hour, minute, second)
-                except ValueError:
-                    continue
+        filename = file_path.stem
+        pattern = re.compile(r'(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})')  # 2023-12-15-12-30-45
+        match = re.search(pattern, filename)
+        if match:
+            try:
+                year, month, day, hour, minute, second = map(int, match.groups())
+                return datetime(year, month, day, hour, minute, second)
+            except ValueError:
+                pass
 
         # If no pattern matches, use file modification time
-        self.logger.warning(f"Could not parse timestamp from {file_path.name}, using modification time")
+        self._logger.warning(f"Could not parse timestamp from {file_path.name}, using modification time")
         return datetime.fromtimestamp(file_path.stat().st_mtime)
 
-    def apply_retention_policies(self) -> None:
+    def _apply_retention_policies(self) -> None:
         """Apply retention policies to mark which backups to keep."""
-        if not self.backup_files:
-            self.logger.info("No backup files to process")
-            return
-
-        # Mark all for deletion initially
-        for backup in self.backup_files:
-            backup._keep = False
-
-        # Apply each retention policy
-        current_time = datetime.now()
-
-        retention_policies = RetentionPolicyApplier(self.logger, self.backup_files, backup_retention_policy)
-        retention_policies.apply()
-
+        self._policy_applier.apply(self._backup_files)
+        
         # Log retention plan
-        kept = sum(1 for b in self.backup_files if b._keep)
-        to_delete = sum(1 for b in self.backup_files if not b._keep)
-        self.logger.info(f"Retention plan: {kept} to keep, {to_delete} to delete")
+        to_delete = sum(1 for b in self._backup_files if b.should_delete)
+        kept = len(self._backup_files) - to_delete
+        self._logger.info(f"Retention plan: {kept} to keep, {to_delete} to delete")
 
-    def cleanup_old_backups(self) -> int:
+    def _cleanup_old_backups(self) -> int:
         """
         Delete backups marked for removal.
 
         Returns:
             Number of deleted files
         """
-        deleted_count = 0
+        for backup in self._backup_files:
+            if not backup.should_delete:
+                continue
+            try:
+                backup.file_path.unlink()  # Delete file
+            except OSError as e:
+                self._logger.error(f"Failed to delete {backup.file_path.name}: {e}")
+                continue
+            self._logger.info(f"Deleted old backup: {backup.file_path.name}")
+        return sum(1 for b in self._backup_files if b.should_delete)
 
-        for backup in self.backup_files:
-            if backup.should_delete():
-                try:
-                    backup.file_path.unlink()  # Delete file
-                    self.logger.info(f"Deleted old backup: {backup.file_path.name}")
-                    deleted_count += 1
-                except OSError as e:
-                    self.logger.error(f"Failed to delete {backup.file_path.name}: {e}")
-
-        return deleted_count
-
-    def dry_run(self) -> None:
+    def _dry_run(self) -> None:
         """Simulate cleanup without actually deleting files."""
-        self.logger.info("=== DRY RUN MODE ===")
+        self._logger.info("=== DRY RUN MODE ===")
 
-        if not self.backup_files:
-            self.logger.info("No backup files found")
+        if not self._backup_files:
+            self._logger.info("No backup files found")
             return
 
-        self.logger.info("Backups to KEEP:")
-        for backup in sorted(self.backup_files, key=lambda x: x.timestamp, reverse=True):
-            if backup._keep:
-                self.logger.info(f"  KEEP: {backup.file_path.name} - {backup.timestamp}")
+        self._logger.info("Backups to KEEP:")
+        for backup in sorted(self._backup_files, key=lambda x: x.timestamp, reverse=True):
+            if not backup.should_delete:
+                self._logger.info(f"  KEEP: {backup.file_path.name} - {backup.timestamp}")
 
-        self.logger.info("Backups to DELETE:")
-        for backup in sorted(self.backup_files, key=lambda x: x.timestamp, reverse=True):
-            if not backup._keep:
-                self.logger.info(f"  DELETE: {backup.file_path.name} - {backup.timestamp}")
+        self._logger.info("Backups to DELETE:")
+        for backup in sorted(self._backup_files, key=lambda x: x.timestamp, reverse=True):
+            if not not backup.should_delete:
+                self._logger.info(f"  DELETE: {backup.file_path.name} - {backup.timestamp}")
 
-        total_size = sum(b.file_path.stat().st_size for b in self.backup_files if not b._keep)
-        self.logger.info(f"Total space to free: {total_size / (1024 ** 3):.2f} GB")
-
-    def run_cleanup(self, dry_run: bool = False) -> None:
-        """Execute the complete backup cleanup process."""
-        self.logger.info("Starting backup cleanup process")
-
-        self.scan_backups()
-        self.apply_retention_policies()
-
-        if dry_run:
-            self.dry_run()
-        else:
-            deleted_count = self.cleanup_old_backups()
-            self.logger.info(f"Cleanup completed. Deleted {deleted_count} files")
+        total_size = sum(b.file_path.stat().st_size for b in self._backup_files if b.should_delete)
+        self._logger.info(f"Total space to free: {total_size / (1024 ** 3):.2f} GB")

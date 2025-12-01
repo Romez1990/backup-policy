@@ -1,7 +1,7 @@
+import pytest
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import Mock
-import pytest
 
 from data import BackupFile, RetentionPolicy
 from retention_policy_applier import RetentionPolicyApplier

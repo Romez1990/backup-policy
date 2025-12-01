@@ -16,20 +16,9 @@ class BackupManager:
         self._backup_dir = Path(backup_dir)
         self._file_pattern = re.compile(r'.*\.(zip)$')
         self._backup_files: list[BackupFile] = []
-        self._setup_logging()
+        self._logger = logging.getLogger(__name__)
         self._policy_applier = RetentionPolicyApplier(self._logger, retention_policy)
 
-    def _setup_logging(self):
-        """Setup logging configuration."""
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.FileHandler('logs.log'),
-                logging.StreamHandler(),
-            ],
-        )
-        self._logger = logging.getLogger(__name__)
 
     def run_cleanup(self, dry_run: bool = False) -> None:
         """Execute the complete backup cleanup process."""

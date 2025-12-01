@@ -26,7 +26,7 @@ class BackupFile:
 
     def mark_to_delete(self) -> None:
         """Mark this backup to be deleted."""
-        self._should_delete = False
+        self._should_delete = True
 
     @property
     def should_delete(self) -> bool:

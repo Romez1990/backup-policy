@@ -22,7 +22,7 @@ class BackupFile:
 
     file_path: Path
     timestamp: datetime
-    _should_delete: bool = field(default=False, init=False, repr=False)
+    _should_delete: bool = field(default=False, init=False)
 
     def mark_to_delete(self) -> None:
         """Mark this backup to be deleted."""

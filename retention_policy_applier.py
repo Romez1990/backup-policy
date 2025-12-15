@@ -64,8 +64,8 @@ class RetentionPolicyApplier:
 
         while not self._backup_queue.empty():
             backup = self._backup_queue.get_nowait()
-            is_first_backup = self._last_backup_datetime is None
-            if is_first_backup:
+            is_newest_backup = self._last_backup_datetime is None
+            if is_newest_backup:
                 return backup
 
             intervals_past = (self._last_backup_datetime - backup.timestamp) / min_interval

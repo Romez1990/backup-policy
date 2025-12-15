@@ -106,3 +106,41 @@ def test_retention_policy_applier(real_backups: list[BackupFile]) -> None:
 
     result = [(backup.file_path.name, not backup.should_delete) for backup in real_backups]
     assert result == real_backup_names
+
+
+def test_sequential_backup_cleanup():
+    """Test adding backups with 15-minute intervals and applying retention policies."""
+    retention_policy = [
+        RetentionPolicy(interval=timedelta(hours=1), keep_count=2),
+        RetentionPolicy(interval=timedelta(hours=4), keep_count=2),
+        RetentionPolicy(interval=timedelta(days=1), keep_count=7),
+    ]
+    mock_logger = Mock()
+    applier = RetentionPolicyApplier(logger=mock_logger, retention_policies=retention_policy)
+
+    # Start with the current time
+    current_time = datetime(2025, 12, 1, 0, 0, 0)
+    # Run 70 iterations of adding a backup and applying retention
+    for backups_count in range(1, 70 + 1):
+        cleanup_after_all_backups = list[BackupFile]()
+        cleanup_after_each_backup = list[BackupFile]()
+
+        for i in range(backups_count):
+            # Create a new backup
+            backup_time = current_time + timedelta(hours=i)
+            backup_name = backup_time.strftime('%Y-%m-%d-%H-%M-%S.zip')
+            cleanup_after_all_backups.insert(0, BackupFile(Path(backup_name), backup_time))
+            cleanup_after_each_backup.insert(0, BackupFile(Path(backup_name), backup_time))
+
+            # Apply retention policies and cleanup
+            applier.apply(cleanup_after_each_backup)
+            cleanup_after_each_backup = [backup for backup in cleanup_after_each_backup if not backup.should_delete]
+
+        # Apply retention policies and cleanup
+        applier.apply(cleanup_after_all_backups)
+        cleanup_after_all_backups = [backup for backup in cleanup_after_all_backups if not backup.should_delete]
+
+        cleanup_after_all_backups_dates = [backup.timestamp.strftime('%d %H:%M') for backup in cleanup_after_all_backups]
+        cleanup_after_each_backup_dates = [backup.timestamp.strftime('%d %H:%M') for backup in cleanup_after_each_backup]
+        print(f'Backups count: {backups_count}: [{', '.join(cleanup_after_all_backups_dates)}]')
+        assert cleanup_after_each_backup_dates == cleanup_after_all_backups_dates
